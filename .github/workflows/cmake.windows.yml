@@ -27,6 +27,8 @@ jobs:
       with:
         version: '5.15.2'
         modules: 'all'
+        cache: 'true'
+        aqtversion: '>=3.0'
     - name: Download SDL2
       shell: pwsh
       run: |
