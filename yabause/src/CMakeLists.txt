@@ -69,7 +69,7 @@ include_directories(tools/junzip)
 include_directories(core/osd/include)
 include_directories(core/m68k)
 
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.5)
 
 cmake_policy(VERSION 3.12)
 
