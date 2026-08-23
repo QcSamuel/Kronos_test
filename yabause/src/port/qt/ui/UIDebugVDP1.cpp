@@ -507,6 +507,56 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
     }
     ts << "\n";
 
+    /* Raw dump of the head of the VDP1 command table. The decoded list above
+       follows the JP field and therefore stops at the first END, which hides
+       the case where a game leaves a "draw nothing" stub at address 0 while
+       the real list it used to build sits further on -- or is simply absent.
+       0xC0 = six 32-byte command tables, the size of a typical FMV list
+       (system clip, user clip, local coords, background sprite, frame sprite,
+       draw end). */
+    ts << "########## VDP1 RAM 0x00000-0x000C0 et 0x01000-0x010C0 (raw) ##########\n\n";
+    if (Vdp1Ram) {
+        /* Deux fenetres : la tete de liste, et 0x1000 -- la cible du stub
+           "call" que le jeu depose parfois en 0x00000. Sans la seconde on ne
+           peut pas dire si la liste reelle vit la-bas ou si l'adresse ne
+           contient qu'un END. */
+        static const u32 kWindows[2] = { 0x00000, 0x01000 };
+        for (int w = 0; w < 2; w++) {
+        for (u32 a = kWindows[w]; a < kWindows[w] + 0xC0; a += 16) {
+            ts << QString("%1  ").arg(a, 5, 16, QChar('0')).toUpper();
+            for (int i = 0; i < 16; i += 2)
+                ts << QString("%1 ").arg(T1ReadWord(Vdp1Ram, a + i),
+                                         4, 16, QChar('0')).toUpper();
+            if ((a & 0x1F) == 0) {
+                u16 ctrl = T1ReadWord(Vdp1Ram, a);
+                ts << "  <- cmd @" << QString("%1").arg(a, 5, 16, QChar('0')).toUpper();
+                if (ctrl & 0x8000)
+                    ts << "  END";
+                else {
+                    const char *jp;
+                    switch ((ctrl >> 12) & 3) {
+                        case 0:  jp = "next";   break;
+                        case 1:  jp = "assign"; break;
+                        case 2:  jp = "call";   break;
+                        default: jp = "return"; break;
+                    }
+                    ts << QString("  type=%1 JP=%2")
+                            .arg(ctrl & 0xF, 1, 16).toUpper()
+                            .arg(QString::fromLatin1(jp));
+                }
+            }
+            ts << "\n";
+        }
+        if (w == 0) ts << "\n";
+        }
+        ts << "\nEach command table is 0x20 bytes: CMDCTRL CMDLINK CMDPMOD CMDCOLR\n"
+              "CMDSRCA CMDSIZE CMDXA CMDYA CMDXB CMDYB CMDXC CMDYC CMDXD CMDYD\n"
+              "CMDGRDA (dummy). CMDCTRL bit15 = END, bits 13-12 = JP\n"
+              "(0 next, 1 assign, 2 call, 3 return), bits 3-0 = command type.\n\n";
+    } else {
+        ts << "Vdp1Ram is NULL.\n\n";
+    }
+
     const int cur = lwCommandList->currentRow();
     ts << "########## SELECTED COMMAND DETAIL";
     if (cur >= 0)

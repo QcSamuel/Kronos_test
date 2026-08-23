@@ -168,6 +168,12 @@ UIYabause::UIYabause( QWidget* parent )
 	connect( mYabauseGL, SIGNAL( emulationPaused()), this, SLOT (runActions()));
 	connect( mYabauseThread, SIGNAL( emulationAlreadyPaused()), this, SLOT (runActionsAlreadyPaused()));
 	connect( mYabauseThread, SIGNAL( initDone()), this, SLOT (threadInitialized()));
+	// YabauseThread used to emit initDone() from its own constructor, i.e.
+	// before this connect() above even existed - the signal was emitted
+	// into the void and threadInitialized() (which populates the STV game
+	// list via STVGetRomList()) was never actually called at startup.
+	// Call it directly now that the connection genuinely exists.
+	threadInitialized();
 
 	// Load shortcuts
 	VolatileSettings* vs = QtYabause::volatileSettings();
