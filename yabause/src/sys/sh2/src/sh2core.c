@@ -1761,6 +1761,12 @@ static u8 getLRU(SH2_struct *context, u32 tag, u8 line) {
     //Shall never be reached
     else if (context->cacheLRU[line] == 0x1E) way=1;
     else if (context->cacheLRU[line] == 0x38) way=0;
+    /* Table 8.3 leaves 32 of the 64 LRU encodings undefined. They are not
+       reachable from the reset state, but "way" starts life as (u8)-1 and is
+       used unchecked as an index into cacheTagArray[64][4] and
+       cacheData[64][4][16], so any future change that reaches one of those
+       states becomes a silent out-of-bounds write. Pin it to a valid way. */
+    else way=0;
 
     // CACHE_LOG("%s : Line %d => way %d\n", (context==SSH2)?"SSH2":"MSH2", line, way);
   }
@@ -1835,11 +1841,30 @@ void CacheWriteLong(SH2_struct *context,u8* mem, u32 addr, u32 val){
 
 void InvalidateCache(SH2_struct *ctx) {
 #ifdef USE_CACHE
+  int line, way;
+
   if (yabsys.usecache == 0) return;
+
+  /* Drop the decoded-instruction cache for every line that was resident,
+     not for 4 KB at address 0.
+
+     A line decoded while the SH2 cache held stale data stays decoded from
+     that stale data forever, because the decode cache never re-reads. The
+     old SH2WriteNotify(ctx, 0, 0x1000) only ever covered the boot ROM, so
+     Work RAM-L and Work RAM-H -- the two regions enableCache() actually
+     caches -- were never invalidated on a purge.
+
+     Walking cacheTagArray reconstructs each resident line's address as
+     (tag << 10) | (line << 4): 256 lines of 16 bytes at most, far cheaper
+     than notifying the 2 MB of cacheable space, and precise. */
+  for (line = 0; line < 64; line++)
+    for (way = 0; way < 4; way++)
+      SH2WriteNotify(ctx,
+                     (ctx->cacheTagArray[line][way] << 10) | (line << 4), 16);
+
   memset(ctx->cacheLRU, 0, 64);
   memset(ctx->tagWay, 0x4, 64*0x80000);
   memset(ctx->cacheTagArray, 0x0, 64*4*sizeof(u32));
-  SH2WriteNotify(ctx, 0, 0x1000);
 #endif
   ctx->cycles += 1;
 }
@@ -1879,31 +1904,21 @@ void enableCache(SH2_struct *context) {
 
 void disableCache(SH2_struct *context) {
 #ifdef USE_CACHE
-  int i;
-  if (context->cacheOn == 1) {
+  /* Only clear this CPU's flag.
+
+     CacheRead*List / CacheWrite*List are GLOBAL tables shared by both SH2s,
+     while cacheOn is per-context. Rewriting them here rerouted the *other*
+     CPU's accesses as well: with the master running cached code, a
+     slave-side disable silently sent every master write straight to memory,
+     bypassing its resident cache lines. The line then kept its old value and
+     the next master read returned it -- a stale read with no bad write
+     anywhere to blame, which is how a saved PR came back as a stack address
+     and the following RTS branched into the stack.
+
+     Routing is now decided per access from context->cacheOn in
+     SH2MappedMemoryRead/Write, so the tables can simply stay installed. */
+  if (context->cacheOn == 1)
     context->cacheOn = 0;
-    for (i=0x20; i < 0x30; i++)
-    {
-      //LowWRam is cached
-      CacheReadByteList[i] = ReadByteList[i];
-      CacheReadWordList[i] = ReadWordList[i];
-      CacheReadLongList[i] = ReadLongList[i];
-      CacheWriteByteList[i] = WriteByteList[i];
-      CacheWriteWordList[i] = WriteWordList[i];
-      CacheWriteLongList[i] = WriteLongList[i];
-    }
-    for (i=0x600; i < 0x800; i++)
-    {
-      //HiWRam is cached
-      CacheReadByteList[i] = ReadByteList[i];
-      CacheReadWordList[i] = ReadWordList[i];
-      CacheReadLongList[i] = ReadLongList[i];
-      CacheWriteByteList[i] = WriteByteList[i];
-      CacheWriteWordList[i] = WriteWordList[i];
-      CacheWriteLongList[i] = WriteLongList[i];
-    }
-    InvalidateCache(context);
-  }
 #else
   return;
 #endif
@@ -2520,7 +2535,7 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  if (context->cacheOn == 0) SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
+                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -2541,7 +2556,7 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  if (context->cacheOn == 0) SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
+                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -2563,7 +2578,7 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  if (context->cacheOn == 0) SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
+                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -2622,13 +2637,13 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                *dmac->CHCR |= 0x2;
                *dmac->CHCRM |= 0x2;
                SH2EvaluateInterrupt(context);
-               if (context->cacheOn == 0) SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
+               SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                return;
              }
            }
            break;
       }
-      if (context->cacheOn == 0) SH2WriteNotify(context, destInc<0?*dmac->DAR:*dmac->DAR-i*destInc,i*abs(destInc));
+      SH2WriteNotify(context, destInc<0?*dmac->DAR:*dmac->DAR-i*destInc,i*abs(destInc));
    }
 
 }
