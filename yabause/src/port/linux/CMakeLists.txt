@@ -62,7 +62,7 @@ if (INTERPRETER_TEST)
 #--------------------------------------------------------------
 # Google Unit Test Library
 #--------------------------------------------------------------
-cmake_minimum_required(VERSION 2.8.8)
+cmake_minimum_required(VERSION 3.16...3.27)
 project(gtest_builder C CXX)
 include(ExternalProject)
 
