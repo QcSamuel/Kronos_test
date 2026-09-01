@@ -88,8 +88,26 @@ bool YabauseGL::event(QEvent *event)
 {
     switch (event->type()) {
     case FrameRequest::mType:
-          if (!mPause) {
+          /* Emulation is driven by these posted events on the GUI thread:
+             each frame runs YabauseExec() and posts the next FrameRequest.
+             Any modal dialog opened from inside emulation -- the SH2
+             breakpoint dialog above all -- spins a nested event loop, that
+             loop finds the queued FrameRequest, and YabauseExec() is
+             entered again from inside itself.
+
+             The visible symptom is a debugger that opens on registers
+             belonging to a later moment than the breakpoint, which quietly
+             invalidates every measurement taken through it. The real
+             hazard is worse: re-entering the interpreter while an outer
+             frame is suspended mid-instruction corrupts emulator state in
+             ways that have nothing to do with debugging.
+
+             Drop nested requests. The outer invocation posts a fresh one
+             as soon as it returns, so the frame chain is never broken. */
+          if (!mPause && !mInFrame) {
+            mInFrame = true;
             YabauseExec();
+            mInFrame = false;
             requestFrame();
           }
           return true;

@@ -64,6 +64,8 @@ protected:
     bool event(QEvent *event) override;
 
 		bool mPause;
+		/* Re-entrancy guard for YabauseExec(). See YabauseGL::event(). */
+		bool mInFrame = false;
 
 };
 

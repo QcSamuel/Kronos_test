@@ -1632,6 +1632,14 @@ void UIDebugSH2::updateAll()
       sh2regs_struct sh2regs;
 
       SH2GetRegisters(debugSH2, &sh2regs);
+      /* Put PC in the title bar. Whether the window shows the state at the
+         breakpoint or a later one is the most common source of a wasted
+         measurement, and until now the only way to tell was to scroll the
+         register list and compare by eye. */
+      setWindowTitle(QString("%1  -  PC %2")
+         .arg(QtYabause::translate(debugSH2 == MSH2 ? "Debug Master SH2"
+                                                   : "Debug Slave SH2"))
+         .arg(QString("%1").arg(sh2regs.PC, 8, 16, QChar('0')).toUpper()));
       updateCodeList(sh2regs.PC);
       updateBackTrace();
       updateTrackInfLoop();

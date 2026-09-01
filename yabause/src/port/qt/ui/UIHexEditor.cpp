@@ -29,15 +29,25 @@ UIHexEditor::UIHexEditor( QWidget* p )
    QList<QString> tabList;
    QList<u32> startList;
    QList<u32> endList;
+   /* The VDP register blocks had no tab: VDP2 CRAM stopped at 05F7FFFF,
+      one byte short of the VDP2 registers, and the VDP1 registers at
+      05D00000 were not covered either. Reaching them meant knowing to type
+      the address into the All tab, and knowing to use the 05xxxxxx mirror
+      rather than the 25xxxxxx form every document and every disassembly
+      listing uses. readByte()/writeByte() already special-case both ranges
+      for word access, so the tabs cost nothing but were simply missing. */
    tabList   << "All"      << "BIOS"     << "LWRAM"    << "HWRAM"     <<
                 "CS0"      << "CS1"      << "CS2"      << "68K RAM"   <<
-                "VDP1 RAM" << "VDP1 FB"  << "VDP2 RAM" << "VDP2 CRAM";
+                "VDP1 RAM" << "VDP1 FB"  << "VDP1 REG" << "VDP2 RAM"  <<
+                "VDP2 CRAM"<< "VDP2 REG";
    startList << 0x00000000 << 0x00000000 << 0x00200000 << 0x06000000 <<
                 0x02000000 << 0x04000000 << 0x05800000 << 0x05A00000 <<
-                0x05C00000 << 0x05C80000 << 0x05E00000 << 0x05F00000;
+                0x05C00000 << 0x05C80000 << 0x05D00000 << 0x05E00000 <<
+                0x05F00000 << 0x05F80000;
    endList   << 0x07FFFFFF << 0x0017FFFF << 0x002FFFFF << 0x060FFFFF <<
                 0x03FFFFFF << 0x04FFFFFF << 0x058FFFFF << 0x05AFFFFF <<
-                0x05C7FFFF << 0x05CFFFFF << 0x05EFFFFF << 0x05F7FFFF;
+                0x05C7FFFF << 0x05CFFFFF << 0x05D7FFFF << 0x05EFFFFF <<
+                0x05F7FFFF << 0x05FBFFFF;
    for (int i=0; i < tabList.count(); i++)
    {
       UIHexEditorWnd *hexEditorWnd = new UIHexEditorWnd (this);

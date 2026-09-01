@@ -4119,7 +4119,8 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     }
     return;
   }
-  else if (a >= 0x780 && a < 0x7C0){
+  else if (a >= 0x780 && a < 0x7C0)
+    {
     u32 address = (a - 0x780)>>1;
     u16 current_val = scsp_dsp.madrs[address];
     if ((a & 0x1) == 0){
@@ -4171,11 +4172,24 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     default:
       break;
     }
+    scsp_dsp.updated = 1;
     return;
   }
-  else if (a > 0xC00 && a <= 0xee2)
+  else if (a >= 0xEC0 && a <= 0xEDF)
+  {
+    u32 address = (a >> 1) & 0x1F;
+    u16 current_val = scsp_dsp.efreg[address];
+    if ((a & 0x1) == 0){
+      scsp_dsp.efreg[address] = (current_val & 0x00FF) | ((u16)d << 8);
+    }
+    else{
+      scsp_dsp.efreg[address] = (current_val & 0xFF00) | (u16)d;
+    }
+    return;
+  }
+  else if (a >= 0xC00 && a < 0xee4)
     {
-      SCSPLOG("WARNING: scsp dsp internal w_w to %08lx w/ %04x\n", a, d);
+      SCSPLOG("WARNING: scsp dsp internal w_b to %08lx w/ %02x\n", a, d);
       a &= 0x3ff;
       scsp_dcr[a ^ 3] = d;
       return;
@@ -4218,9 +4232,9 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
      scsp_dsp.coef[address] = d >> 3;//lower 3 bits seem to be discarded
      return;
   }
-  else if (a >= 0x780 && a < 0x7BF)
+  else if (a >= 0x780 && a < 0x7C0)
   {
-     u32 address = (a&0x3F) / 2;
+     u32 address = (a - 0x780) / 2;
      scsp_dsp.madrs[address] = d;
      return;
   }else if (a >= 0x800 && a < 0xC00)
@@ -4250,6 +4264,11 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
         break;
      }
      scsp_dsp.updated = 1;
+     return;
+  }
+  else if (a >= 0xEC0 && a <= 0xEDF)
+  {
+     scsp_dsp.efreg[(a >> 1) & 0x1F] = d;
      return;
   }
   else if (a < 0xee4)
@@ -4294,16 +4313,14 @@ scsp_w_d (SH2_struct *context, UNUSED u8* m, u32 a, u32 d)
           return;
         }
     }
-  else if (a < 0x700)
-  {
-  }
-  else if (a >= 0xEC0 && a <= 0xEDF){
-    scsp_dsp.efreg[ (a>>1) & 0x1F] = d;
-  }
   else if (a < 0xee4)
     {
-      a &= 0x3ff;
-      *(u32 *)&scsp_dcr[a] = d;
+      /* Sound stack + whole DSP register area (COEF/MADRS/MPRO/TEMP/MEMS/
+         MIXS/EFREG/EXTS). The SCSP is a 16-bit device: on real hardware a
+         long access is split into two 16-bit bus cycles, so do the same
+         instead of dropping the access into scsp_dcr. */
+      scsp_w_w (context, m, a + 0, (u16)(d >> 16));
+      scsp_w_w (context, m, a + 2, (u16)(d & 0xFFFF));
       return;
     }
 
@@ -4325,21 +4342,11 @@ scsp_r_b (SH2_struct *context, UNUSED u8* m, u32 a)
     {
       if (a < 0x440) return scsp_get_b(a);
     }
-  else if (a < 0x700)
+    else if (a < 0xee4)
     {
-
-    }
-  else if (a >= 0xEC0 && a <= 0xEDF){
-    u16 val = scsp_dsp.efreg[ (a>>1) & 0x1F];
-    if( (a&0x01) == 0){
-      return val >> 8;
-    }else{
-      return val & 0xFF;
-     }
-  }
-  else if (a < 0xee4)
-    {
-
+      /* Byte access to the DSP area: extract from the 16-bit register. */
+      u16 val = scsp_r_w (context, m, a & ~1);
+      return ((a & 1) == 0) ? (u8)(val >> 8) : (u8)(val & 0xFF);
     }
 
   SCSPLOG("WARNING: scsp r_b to %08lx\n", a);
@@ -4377,15 +4384,9 @@ scsp_r_w (SH2_struct *context, UNUSED u8* m, u32 a)
      u32 address = (a - 0x700) / 2;
      return scsp_dsp.coef[address] << 3;
   }
-  else if (a >= 0x780 && a < 0x7A0)
+  else if (a >= 0x780 && a < 0x7C0)
   {
      u32 address = (a - 0x780) / 2;
-     return scsp_dsp.madrs[address];
-  }
-  else if (a >= 0x7A0 && a < 0x7C0)
-  {
-     //madrs mirror
-     u32 address = (a - 0x7A0) / 2;
      return scsp_dsp.madrs[address];
   }
   else if (a >= 0x800 && a < 0xC00)
@@ -4453,13 +4454,12 @@ scsp_r_d (SH2_struct *context, UNUSED u8* m, u32 a)
     {
       if (a < 0x440) return (scsp_get_w (a + 0) << 16) | scsp_get_w (a + 2);
     }
-  else if (a < 0x700)
-    {
-
-    }
   else if (a < 0xee4)
     {
-      if (a == 0xee0) { return ((u32)(scsp_dsp.exts[0]) << 16) | (u32)scsp_dsp.exts[1]; }
+      /* Mirror of scsp_w_d: rebuild the long from two 16-bit reads so that
+         read-back verification of the DSP program works. */
+      return ((u32)scsp_r_w (context, m, a + 0) << 16)
+           |  (u32)scsp_r_w (context, m, a + 2);
     }
 
   SCSPLOG("WARNING: scsp r_d to %08lx\n", a);

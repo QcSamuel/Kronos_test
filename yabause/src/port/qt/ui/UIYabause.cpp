@@ -1054,17 +1054,36 @@ void UIYabause::on_aViewFullscreen_triggered( bool b )
 	fullscreenRequested( b );
 }
 
+/* Install the SH2 breakpoint handlers as soon as the cores exist.
+
+   They used to be installed only by the UIDebugSH2 constructor, so anything
+   that raises a breakpoint did nothing at all until the user had opened the
+   debugger window once in that session. The failure was silent: the flag was
+   raised, no callback existed, execution carried on. */
+void UIYabause::installSH2BreakpointHandlers()
+{
+	if (MSH2)
+		SH2SetBreakpointCallBack(MSH2, (void (*)(void *, u32, void *))SH2BreakpointHandler, NULL);
+	if (SSH2)
+		SH2SetBreakpointCallBack(SSH2, (void (*)(void *, u32, void *))SH2BreakpointHandler, NULL);
+}
+
 void UIYabause::breakpointHandlerMSH2(breakpoint_userdata *userdata)
 {
 	ScspMuteAudio(SCSP_MUTE_SYSTEM);
+	/* Spell out what each button does. OK is the only path that opens the
+	   debugger; Ignore resumes emulation at once, and reopening the window
+	   from the Debug menu afterwards shows wherever the CPU has run to
+	   since -- registers that look plausible but belong to another moment. */
+	QString hint = QtYabause::translate( "\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost." );
 	if (userdata) {
 		if (userdata->PCAddress == userdata->BPAddress) {
-			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16)))
+			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16).append(hint)))
 			UIDebugSH2(UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
 			else
 			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
 		} else {
-			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16) ))
+			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16).append(hint) ))
 			UIDebugSH2(UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
 			else
 			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
@@ -1077,14 +1096,19 @@ void UIYabause::breakpointHandlerMSH2(breakpoint_userdata *userdata)
 void UIYabause::breakpointHandlerSSH2(breakpoint_userdata *userdata)
 {
 	ScspMuteAudio(SCSP_MUTE_SYSTEM);
+	/* Spell out what each button does. OK is the only path that opens the
+	   debugger; Ignore resumes emulation at once, and reopening the window
+	   from the Debug menu afterwards shows wherever the CPU has run to
+	   since -- registers that look plausible but belong to another moment. */
+	QString hint = QtYabause::translate( "\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost." );
 	if (userdata) {
 		if (userdata->PCAddress == userdata->BPAddress) {
-			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16)))
+			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16).append(hint)))
 			UIDebugSH2(UIDebugCPU::PROC_SSH2, mYabauseThread, this ).exec();
 			else
 			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
 		} else {
-			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16) ))
+			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16).append(hint) ))
 			UIDebugSH2(UIDebugCPU::PROC_SSH2, mYabauseThread, this ).exec();
 			else
 			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
@@ -1222,6 +1246,10 @@ void UIYabause::on_cbVideoDriver_currentIndexChanged( int id )
 void UIYabause::pause( bool paused )
 {
 	mYabauseGL->pause(paused);
+	/* Emulation has started or resumed, so the cores exist: make sure the
+	   breakpoint handlers are in place even if the debugger window was
+	   never opened. Idempotent, so calling it on every pause is fine. */
+	installSH2BreakpointHandlers();
 
 	aEmulationRun->setEnabled( paused );
 	aEmulationPause->setEnabled( !paused );
