@@ -48,10 +48,6 @@ jobs:
       run: |
         cmake -S ${{github.workspace}}/yabause -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DYAB_IS_WIP=ON
 
-    - name: Install NSIS
-      run: |
-        choco install nsis -y
-
     - name: Build
       # Build your program with the given configuration
       run: |
