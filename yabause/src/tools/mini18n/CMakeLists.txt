@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.16...3.27)
 project(mini18n)
 
 set(MINI18N_VERSION_MAJOR 0)
