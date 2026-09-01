@@ -69,9 +69,7 @@ include_directories(tools/junzip)
 include_directories(core/osd/include)
 include_directories(core/m68k)
 
-cmake_minimum_required(VERSION 3.5)
-
-cmake_policy(VERSION 3.12)
+cmake_minimum_required(VERSION 3.16...3.27)
 
 option(YAB_FORCE_GLES31 "force to use OpenGLES 3.1" OFF)
 
