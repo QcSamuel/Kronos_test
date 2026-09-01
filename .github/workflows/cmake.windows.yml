@@ -32,7 +32,9 @@ jobs:
     - name: Download SDL2
       shell: pwsh
       run: |
-          Invoke-WebRequest -OutFile SDL2.zip -Uri https://github.com
+          $base = "https://github.com/libsdl-org/SDL/releases/download"
+          $file = "release-2.32.10/SDL2-devel-2.32.10-VC.zip"
+          Invoke-WebRequest -OutFile SDL2.zip -Uri "$base/$file"
     - name: Install SDL2
       shell: pwsh
       run: |
@@ -49,7 +51,7 @@ jobs:
         cmake -S ${{github.workspace}}/yabause -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DYAB_IS_WIP=ON
 
     - name: Setup NSIS
-      uses: amake/github-actions-nsis@v1
+      uses: negrutiu/nsis-install@v2
 
     - name: Build
       # Build your program with the given configuration
