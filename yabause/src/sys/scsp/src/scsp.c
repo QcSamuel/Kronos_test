@@ -1491,7 +1491,10 @@ void generate_sample(struct Scsp * s, int rbp, int rbl, s16 * out_l, s16* out_r,
    }
 
    for (i = 0; i < scsp_dsp.last_step; i++)
+   {
+      ScspDspCheckBreakpoints((u32)i);
       ScspDspExec(&scsp_dsp, i, SoundRam);
+   }
 
    if (!scsp_dsp.mdec_ct){
      scsp_dsp.mdec_ct = (0x2000 << rbl);
@@ -4119,8 +4122,7 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     }
     return;
   }
-  else if (a >= 0x780 && a < 0x7C0)
-    {
+  else if (a >= 0x780 && a < 0x7C0){
     u32 address = (a - 0x780)>>1;
     u16 current_val = scsp_dsp.madrs[address];
     if ((a & 0x1) == 0){
@@ -4172,24 +4174,11 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     default:
       break;
     }
-    scsp_dsp.updated = 1;
     return;
   }
-  else if (a >= 0xEC0 && a <= 0xEDF)
-  {
-    u32 address = (a >> 1) & 0x1F;
-    u16 current_val = scsp_dsp.efreg[address];
-    if ((a & 0x1) == 0){
-      scsp_dsp.efreg[address] = (current_val & 0x00FF) | ((u16)d << 8);
-    }
-    else{
-      scsp_dsp.efreg[address] = (current_val & 0xFF00) | (u16)d;
-    }
-    return;
-  }
-  else if (a >= 0xC00 && a < 0xee4)
+  else if (a > 0xC00 && a <= 0xee2)
     {
-      SCSPLOG("WARNING: scsp dsp internal w_b to %08lx w/ %02x\n", a, d);
+      SCSPLOG("WARNING: scsp dsp internal w_w to %08lx w/ %04x\n", a, d);
       a &= 0x3ff;
       scsp_dcr[a ^ 3] = d;
       return;
@@ -4232,9 +4221,9 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
      scsp_dsp.coef[address] = d >> 3;//lower 3 bits seem to be discarded
      return;
   }
-  else if (a >= 0x780 && a < 0x7C0)
+  else if (a >= 0x780 && a < 0x7BF)
   {
-     u32 address = (a - 0x780) / 2;
+     u32 address = (a&0x3F) / 2;
      scsp_dsp.madrs[address] = d;
      return;
   }else if (a >= 0x800 && a < 0xC00)
@@ -4264,11 +4253,6 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
         break;
      }
      scsp_dsp.updated = 1;
-     return;
-  }
-  else if (a >= 0xEC0 && a <= 0xEDF)
-  {
-     scsp_dsp.efreg[(a >> 1) & 0x1F] = d;
      return;
   }
   else if (a < 0xee4)
@@ -4313,14 +4297,16 @@ scsp_w_d (SH2_struct *context, UNUSED u8* m, u32 a, u32 d)
           return;
         }
     }
+  else if (a < 0x700)
+  {
+  }
+  else if (a >= 0xEC0 && a <= 0xEDF){
+    scsp_dsp.efreg[ (a>>1) & 0x1F] = d;
+  }
   else if (a < 0xee4)
     {
-      /* Sound stack + whole DSP register area (COEF/MADRS/MPRO/TEMP/MEMS/
-         MIXS/EFREG/EXTS). The SCSP is a 16-bit device: on real hardware a
-         long access is split into two 16-bit bus cycles, so do the same
-         instead of dropping the access into scsp_dcr. */
-      scsp_w_w (context, m, a + 0, (u16)(d >> 16));
-      scsp_w_w (context, m, a + 2, (u16)(d & 0xFFFF));
+      a &= 0x3ff;
+      *(u32 *)&scsp_dcr[a] = d;
       return;
     }
 
@@ -4342,11 +4328,21 @@ scsp_r_b (SH2_struct *context, UNUSED u8* m, u32 a)
     {
       if (a < 0x440) return scsp_get_b(a);
     }
-    else if (a < 0xee4)
+  else if (a < 0x700)
     {
-      /* Byte access to the DSP area: extract from the 16-bit register. */
-      u16 val = scsp_r_w (context, m, a & ~1);
-      return ((a & 1) == 0) ? (u8)(val >> 8) : (u8)(val & 0xFF);
+
+    }
+  else if (a >= 0xEC0 && a <= 0xEDF){
+    u16 val = scsp_dsp.efreg[ (a>>1) & 0x1F];
+    if( (a&0x01) == 0){
+      return val >> 8;
+    }else{
+      return val & 0xFF;
+     }
+  }
+  else if (a < 0xee4)
+    {
+
     }
 
   SCSPLOG("WARNING: scsp r_b to %08lx\n", a);
@@ -4384,9 +4380,15 @@ scsp_r_w (SH2_struct *context, UNUSED u8* m, u32 a)
      u32 address = (a - 0x700) / 2;
      return scsp_dsp.coef[address] << 3;
   }
-  else if (a >= 0x780 && a < 0x7C0)
+  else if (a >= 0x780 && a < 0x7A0)
   {
      u32 address = (a - 0x780) / 2;
+     return scsp_dsp.madrs[address];
+  }
+  else if (a >= 0x7A0 && a < 0x7C0)
+  {
+     //madrs mirror
+     u32 address = (a - 0x7A0) / 2;
      return scsp_dsp.madrs[address];
   }
   else if (a >= 0x800 && a < 0xC00)
@@ -4454,12 +4456,13 @@ scsp_r_d (SH2_struct *context, UNUSED u8* m, u32 a)
     {
       if (a < 0x440) return (scsp_get_w (a + 0) << 16) | scsp_get_w (a + 2);
     }
+  else if (a < 0x700)
+    {
+
+    }
   else if (a < 0xee4)
     {
-      /* Mirror of scsp_w_d: rebuild the long from two 16-bit reads so that
-         read-back verification of the DSP program works. */
-      return ((u32)scsp_r_w (context, m, a + 0) << 16)
-           |  (u32)scsp_r_w (context, m, a + 2);
+      if (a == 0xee0) { return ((u32)(scsp_dsp.exts[0]) << 16) | (u32)scsp_dsp.exts[1]; }
     }
 
   SCSPLOG("WARNING: scsp r_d to %08lx\n", a);
@@ -6406,10 +6409,22 @@ AddSoundLevel (char *outstring, u16 level)
 void
 ScspSlotDebugStats (u8 slotnum, char *outstring)
 {
+  // BUG (pre-existant, identique upstream Kronos) : cette fonction lisait
+  // scsp.slot[slotnum].* pour la quasi-totalite de ses champs (Sound
+  // Source/Source bit/Loop Mode/PCM8B/adresses/taux d'enveloppe/Total
+  // Level/Modulation...). Or scsp.slot[] n'est JAMAIS ecrit par le moteur
+  // audio reellement actif : seuls quelques champs lus via scsp_r_w()
+  // (Octave/Frequency/LFO/mix/pan) refletaient l'etat reel. Resultat :
+  // pour n'importe quel jeu, ~90% de ce rapport affichait en permanence
+  // les valeurs par defaut a zero (Loop Mode="Off", Total Level=0, etc.)
+  // quel que soit ce que faisait vraiment le jeu. Remplace par des lectures
+  // dans new_scsp.slots[slotnum] (registres + etat runtime), la structure
+  // effectivement utilisee par op1/op2/op3 pour la synthese audio.
   u32 slotoffset = slotnum * 0x20;
+  struct Slot *dslot = &new_scsp.slots[slotnum];
 
   AddString (outstring, "Sound Source = ");
-  switch (scsp.slot[slotnum].ssctl)
+  switch (dslot->regs.ssctl)
     {
     case 0:
       AddString (outstring, "External DRAM data\r\n");
@@ -6426,7 +6441,7 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
     }
 
   AddString (outstring, "Source bit = ");
-  switch(scsp.slot[slotnum].sbctl)
+  switch(dslot->regs.sbctl)
     {
     case 0:
       AddString (outstring, "No bit reversal\r\n");
@@ -6444,7 +6459,7 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
 
   // Loop Control
   AddString (outstring, "Loop Mode = ");
-  switch (scsp.slot[slotnum].lpctl)
+  switch (dslot->regs.lpctl)
     {
     case 0:
       AddString (outstring, "Off\r\n");
@@ -6462,7 +6477,7 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
 
   // PCM8B
   // NOTE: Need curly braces here, as AddString is a macro.
-  if (scsp.slot[slotnum].pcm8b)
+  if (dslot->regs.pcm8b)
     {
       AddString (outstring, "8-bit samples\r\n");
     }
@@ -6471,35 +6486,35 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
       AddString (outstring, "16-bit samples\r\n");
     }
 
-  AddString (outstring, "Start Address = %05lX\r\n", (unsigned long)scsp.slot[slotnum].sa);
-  AddString (outstring, "Loop Start Address = %04lX\r\n", (unsigned long)scsp.slot[slotnum].lsa >> SCSP_FREQ_LB);
-  AddString (outstring, "Loop End Address = %04lX\r\n", (unsigned long)scsp.slot[slotnum].lea >> SCSP_FREQ_LB);
-  AddString (outstring, "Decay 1 Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].dr);
-  AddString (outstring, "Decay 2 Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].sr);
-  if (scsp.slot[slotnum].eghold)
+  AddString (outstring, "Start Address = %05lX\r\n", (unsigned long)dslot->regs.sa);
+  AddString (outstring, "Loop Start Address = %04lX\r\n", (unsigned long)dslot->regs.lsa);
+  AddString (outstring, "Loop End Address = %04lX\r\n", (unsigned long)dslot->regs.lea);
+  AddString (outstring, "Decay 1 Rate = %ld\r\n", (unsigned long)dslot->regs.d1r);
+  AddString (outstring, "Decay 2 Rate = %ld\r\n", (unsigned long)dslot->regs.d2r);
+  if (dslot->regs.hold)
     AddString (outstring, "EG Hold Enabled\r\n");
-  AddString (outstring, "Attack Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].ar);
+  AddString (outstring, "Attack Rate = %ld\r\n", (unsigned long)dslot->regs.ar);
 
-  if (scsp.slot[slotnum].lslnk)
+  if (dslot->regs.ls)
     AddString (outstring, "Loop Start Link Enabled\r\n");
 
-  if (scsp.slot[slotnum].krs != 0)
-    AddString (outstring, "Key rate scaling = %ld\r\n", (unsigned long)scsp.slot[slotnum].krs);
+  if (dslot->regs.krs != 0)
+    AddString (outstring, "Key rate scaling = %ld\r\n", (unsigned long)dslot->regs.krs);
 
-  AddString (outstring, "Decay Level = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0xA) >> 5) & 0x1F);
-  AddString (outstring, "Release Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].rr);
+  AddString (outstring, "Decay Level = %ld\r\n", (unsigned long)dslot->regs.dl);
+  AddString (outstring, "Release Rate = %ld\r\n", (unsigned long)dslot->regs.rr);
 
-  if (scsp.slot[slotnum].swe)
+  if (dslot->regs.si)
     AddString (outstring, "Stack Write Inhibited\r\n");
 
-  if (scsp.slot[slotnum].sdir)
+  if (dslot->regs.sd)
     AddString (outstring, "Sound Direct Enabled\r\n");
 
-  AddString (outstring, "Total Level = %ld\r\n", (unsigned long)scsp.slot[slotnum].tl);
+  AddString (outstring, "Total Level = %ld\r\n", (unsigned long)dslot->regs.tl);
 
-  AddString (outstring, "Modulation Level = %d\r\n", scsp.slot[slotnum].mdl);
-  AddString (outstring, "Modulation Input X = %d\r\n", scsp.slot[slotnum].mdx);
-  AddString (outstring, "Modulation Input Y = %d\r\n", scsp.slot[slotnum].mdy);
+  AddString (outstring, "Modulation Level = %d\r\n", dslot->regs.mdl);
+  AddString (outstring, "Modulation Input X = %d\r\n", dslot->regs.mdxsl);
+  AddString (outstring, "Modulation Input Y = %d\r\n", dslot->regs.mdysl);
 
   AddString (outstring, "Octave = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0x10) >> 11) & 0xF);
   AddString (outstring, "Frequency Number Switch = %d\r\n", scsp_r_w(NULL, NULL, slotoffset + 0x10) & 0x3FF);
@@ -6528,6 +6543,27 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
   outstring = AddSoundLevel (outstring, (scsp_r_w(NULL, NULL, slotoffset + 0x16) >> 5) & 0x7);
   AddString (outstring, "Effect data panpot = ");
   outstring = AddSoundPan (outstring, scsp_r_w(NULL, NULL, slotoffset + 0x16) & 0x1F);
+
+  // Etat runtime (n'existait pas du tout avant : la fonction ne couvrait
+  // que la config statique des registres, jamais ce que le moteur de
+  // synthese est en train de faire au moment de l'appel). C'est ce qui
+  // permet de voir si un slot est reellement fige/en boucle.
+  AddString (outstring, "\r\n-- Runtime state --\r\n");
+  AddString (outstring, "KYONB (playing) = %s\r\n", dslot->regs.kb ? "TRUE" : "FALSE");
+  switch (dslot->state.envelope)
+    {
+    case ATTACK:  AddString (outstring, "Envelope phase = ATTACK\r\n");  break;
+    case DECAY1:  AddString (outstring, "Envelope phase = DECAY1\r\n");  break;
+    case DECAY2:  AddString (outstring, "Envelope phase = DECAY2 (sustain)\r\n"); break;
+    case RELEASE: AddString (outstring, "Envelope phase = RELEASE\r\n"); break;
+    default:      AddString (outstring, "Envelope phase = (unknown %d)\r\n", (int)dslot->state.envelope); break;
+    }
+  AddString (outstring, "Attenuation = %03X%s\r\n", dslot->state.attenuation,
+             (dslot->state.attenuation >= 0x3bf) ? " (near/at silence)" : "");
+  AddString (outstring, "Sample offset = %ld%s\r\n", (long)dslot->state.sample_offset,
+             (dslot->regs.lpctl == 0 && dslot->state.sample_offset >= dslot->regs.lea) ? " (>= LEA, one-shot finished)" : "");
+  AddString (outstring, "Direction = %s\r\n", dslot->state.backwards ? "backwards" : "forwards");
+  AddString (outstring, "Output = %d\r\n", dslot->state.output);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -6761,6 +6797,83 @@ ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
   ywrite (&check, (void *)&length, 1, 4, fp);
   fclose (fp);
 
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+// Export complet : registres communs + les 32 slots + etat du DSP dans un
+// seul fichier texte lisible, en plus des exports individuels deja
+// existants (ScspSlotDebugStats/ScspSlotDebugSaveRegisters, un slot a la
+// fois). Pense pour capturer d'un coup l'etat complet de la puce (utile
+// pour deboguer a distance sans repasser slot par slot dans l'UI).
+int
+ScspSaveFullDebugReport(const char *filename)
+{
+  FILE *fp;
+  char tempstr[2048];
+  char *dspstr;
+  const size_t dspstr_size = 32768; // marge large : voir dimensionnement dans scspdsp.c
+  int i;
+
+  if (!filename)
+    return -1;
+
+  if (!HighWram)
+    return -1;
+
+  if ((fp = fopen(filename, "w")) == NULL)
+    return -1;
+
+  fprintf(fp, "==================================================\n");
+  fprintf(fp, "SCSP full debug report\n");
+  fprintf(fp, "==================================================\n\n");
+
+  fprintf(fp, "---- Common Control Registers ----\n");
+  ScspCommonControlRegisterDebugStats(tempstr);
+  fprintf(fp, "%s\n\n", tempstr);
+
+  for (i = 0; i < 32; i++)
+  {
+    fprintf(fp, "---- Slot %d ----\n", i);
+    ScspSlotDebugStats((u8)i, tempstr);
+    fprintf(fp, "%s\n\n", tempstr);
+  }
+
+  fprintf(fp, "---- DSP ----\n");
+  dspstr = (char *)malloc(dspstr_size);
+  if (dspstr)
+  {
+    ScspDspFullDebugStats(dspstr, dspstr_size);
+    fprintf(fp, "%s\n", dspstr);
+    free(dspstr);
+  }
+
+  fclose(fp);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Dump binaire brut de toute la RAM son SCSP (512Ko / 0x80000), pour
+// pouvoir inspecter hors-ligne les donnees d'echantillons pointees par
+// SA/LSA/LEA d'un slot donne (reperees dans ScspSaveFullDebugReport).
+int
+ScspSaveSoundRam(const char *filename)
+{
+  FILE *fp;
+
+  if (!filename)
+    return -1;
+
+  if (!SoundRam)
+    return -1;
+
+  if ((fp = fopen(filename, "wb")) == NULL)
+    return -1;
+
+  fwrite(SoundRam, 1, SCSP_RAM_SIZE, fp);
+  fclose(fp);
   return 0;
 }
 
