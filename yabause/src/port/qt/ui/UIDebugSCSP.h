@@ -30,6 +30,7 @@ class UIDebugSCSP : public QDialog, public Ui::UIDebugSCSP
 {
 	Q_OBJECT
 private:
+	QTimer *autoRefreshTimer;
 #ifdef HAVE_QT_MULTIMEDIA
 	QTimer *audioBufferTimer;
 
@@ -39,13 +40,26 @@ private:
 	QAudioFormat audioFormat;
 	bool isPlaying;
 
+	// Alloues avec new[] dans stateChanged() : doivent donc etre liberes
+	// avec delete[] (cf. freeAudioBuffers()) -- l'ancien code faisait
+	// "delete", ce qui est un comportement indefini sur un tableau.
 	u32 *slot_workbuf;
 	s16 *slot_buf;
+	int slot_buf_samples;   // taille reelle de slot_buf, en echantillons s16
 #endif
 
 public:
 	UIDebugSCSP( QWidget* parent = 0 );
 	~UIDebugSCSP();
+
+private:
+	void refreshWatchList();
+	void refreshSlotInfo();
+	void refreshCommonRegisters();
+	void updateWatchGroupTitle();
+#ifdef HAVE_QT_MULTIMEDIA
+	void freeAudioBuffers();
+#endif
 
 #ifdef HAVE_QT_MULTIMEDIA
 protected:
@@ -58,6 +72,13 @@ protected slots:
    void on_pbSaveSlotRegisters_clicked ();
    void on_pbExportFullReport_clicked ();
    void on_pbExportSoundRam_clicked ();
+   void on_pbExportCs2Report_clicked ();
+   void on_pbWatchAdd_clicked ();
+   void on_pbWatchDel_clicked ();
+   void on_pbWatchExportLog_clicked ();
+   void on_pbWatchClearLog_clicked ();
+   void on_cbAutoRefresh_toggled ( bool checked );
+   void autoRefreshTick();
 #ifdef HAVE_QT_MULTIMEDIA
 	void on_pbPlaySlot_clicked ();
 	void notified();
