@@ -2121,6 +2121,9 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          return;
       case 0x18C:
         if (SH2IsRunawayCDTransfer(context, 0, val)) {
+          LOG("SH2 DMAC ch0: refusing runaway CD transfer, SAR=%08X TCR=0 CHCR=%08X PC=%08X\n",
+              (unsigned)context->onchip.SAR0, (unsigned)val,
+              (unsigned)context->regs.PC);
           context->onchip.CHCR0 = (val & ~1) | 0x2;   /* DE=0, TE=1 */
           return;
         }
@@ -2151,6 +2154,9 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          return;
       case 0x19C:
         if (SH2IsRunawayCDTransfer(context, 1, val)) {
+          LOG("SH2 DMAC ch1: refusing runaway CD transfer, SAR=%08X TCR=0 CHCR=%08X PC=%08X\n",
+              (unsigned)context->onchip.SAR1, (unsigned)val,
+              (unsigned)context->regs.PC);
           context->onchip.CHCR1 = (val & ~1) | 0x2;   /* DE=0, TE=1 */
           return;
         }
@@ -3178,8 +3184,7 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
    the transfer can only destroy the machine state, so refuse it. */
 static int SH2IsRunawayCDTransfer(SH2_struct *context, int ch, u32 newchcr)
 {
-   u32 sar, tcr, unit;
-   u64 bytes;
+   u32 sar, tcr;
 
    if ((newchcr & 0x3) != 0x1)          /* only a fresh DE=1 / TE=0 arming */
       return 0;
@@ -3188,11 +3193,18 @@ static int SH2IsRunawayCDTransfer(SH2_struct *context, int ch, u32 newchcr)
    if (((sar & 0x0FF00000) != SH2_CDBLOCK_DATA_AREA))
       return 0;
 
-   tcr  = (ch ? context->onchip.TCR1 : context->onchip.TCR0) & 0xFFFFFF;
-   unit = 1u << ((newchcr & 0x0C00) >> 10);      /* TS[11:10]: 1, 2, 4 or 16 */
-   bytes = (u64)(tcr == 0 ? 0x1000000u : tcr) * unit;
+   tcr = (ch ? context->onchip.TCR1 : context->onchip.TCR0) & 0xFFFFFF;
 
-   return (bytes > 0x100000);           /* larger than work RAM high */
+   /* Only the literal "count is zero" case is caught. On the SH7604 that means
+      16,777,216 transfer units (manual sec. 9.2.3), and DATATRNS is a FIFO
+      (ST-162 sec. 3.1), so no title ever asks the DMAC to pull 16M units out
+      of it -- that count is always a programming accident.
+
+      Any other count is left alone, however large. Sizing the guard by byte
+      count instead was wrong: a legitimate load bigger than the threshold got
+      cancelled too, the game waited forever for data that never arrived, and
+      3D Mission Shooting stopped booting past its publisher logo. */
+   return (tcr == 0);
 }
 
 //////////////////////////////////////////////////////////////////////////////
