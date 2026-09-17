@@ -18,9 +18,13 @@
 #include <QTextStream>
 #include <QDateTime>
 #include <QApplication>
+#include <QWheelEvent>
+#include <QMouseEvent>
+#include <QColor>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <cmath>
 
 // VDP1 system headers
 extern "C" {
@@ -297,15 +301,47 @@ void UIDebugVDP1::fillCommandList()
             Vdp1CountCommands(i, cmdCount);
             
             QListWidgetItem *item = new QListWidgetItem(QtYabause::translate(nameStr));
-            int type = (int)Vdp1DebugGetCommandType(i); // Cast en int pour comparaison matérielle
-            
-            // Coloration robuste utilisant les ID matériels
-            if (type >= 0x00 && type <= 0x05) 
-                item->setForeground(Qt::darkGreen); // Sprites
-            else if (type == 0x06) 
-                item->setForeground(Qt::blue);      // Polygons
-            else if (type == 0x08 || type == 0x09) 
-                item->setForeground(Qt::gray);      // User/System Clipping
+            Vdp1CommandType type = Vdp1DebugGetCommandType(i);
+
+            // Fix: this used to color by numeric range ("0x00..0x05" =
+            // green, etc.), which doesn't match Vdp1CommandType (vdp1.h) at
+            // all -- Polygon(4) and Polyline(5) fell inside the "sprite"
+            // range and were colored green, the comment on type 6 said
+            // "Polygons" but 6 is actually Line, and Local
+            // Coordinates/PolylineN/User Clipping N had no color at all.
+            // Switching on the real enum makes this impossible to drift
+            // out of sync again, and gives every command type a color
+            // instead of the five that happened to fall in-range before.
+            switch (type)
+            {
+                case VDPCT_NORMAL_SPRITE:
+                case VDPCT_SCALED_SPRITE:
+                case VDPCT_DISTORTED_SPRITE:
+                case VDPCT_DISTORTED_SPRITEN:
+                    item->setForeground(Qt::darkGreen); // Sprites
+                    break;
+                case VDPCT_POLYGON:
+                    item->setForeground(Qt::blue); // Polygon
+                    break;
+                case VDPCT_POLYLINE:
+                case VDPCT_POLYLINEN:
+                    item->setForeground(Qt::darkCyan); // Polyline
+                    break;
+                case VDPCT_LINE:
+                    item->setForeground(QColor(180, 90, 0)); // Line (dark orange)
+                    break;
+                case VDPCT_USER_CLIPPING_COORDINATES:
+                case VDPCT_USER_CLIPPING_COORDINATESN:
+                case VDPCT_SYSTEM_CLIPPING_COORDINATES:
+                case VDPCT_LOCAL_COORDINATES:
+                    item->setForeground(Qt::gray); // Clipping / local coords
+                    break;
+                case VDPCT_INVALID:
+                    item->setForeground(Qt::red); // Invalid command word
+                    break;
+                default:
+                    break; // VDPCT_DRAW_END: leave at the default text color
+            }
                 
             lwCommandList->addItem(item);
 
@@ -333,6 +369,9 @@ void UIDebugVDP1::clearVdp1Display()
     if (vdp1texture) { free(vdp1texture); vdp1texture = NULL; }
     if (vdp1RawTexture) { free(vdp1RawTexture); vdp1RawTexture = NULL; }
     vdp1RawNumBytes = 0;
+    currentTextureImage = QImage();
+    lTextureInfo->setText(QtYabause::translate("No texture"));
+    lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
     pbSaveBitmap->setEnabled(false);
     pbSaveRawSprite->setEnabled(false);
     if (gvTexture->scene()) gvTexture->scene()->clear();
@@ -341,12 +380,25 @@ void UIDebugVDP1::clearVdp1Display()
 UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lock)
 {
     setupUi(this);
-    gvTexture->setScene(new QGraphicsScene(this));
+    QGraphicsScene *scene = new QGraphicsScene(this);
+    // Damier de transparence, comme UIDebugVDP2Viewer::gvScreen : un sprite
+    // VDP1 utilise très souvent la couleur 0 (ou SPD=0) comme code de
+    // transparence, et sur le fond uni précédent un pixel transparent était
+    // indiscernable d'un pixel opaque de la même couleur que la fenêtre.
+    scene->setBackgroundBrush(Qt::Dense7Pattern);
+    gvTexture->setScene(scene);
 
     connect(lwCommandList->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandRaw->verticalScrollBar(), &QScrollBar::setValue);
     connect(lwCommandRaw->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandList->verticalScrollBar(), &QScrollBar::setValue);
+
+    // Filtre d'événements plutôt que surcharger mouseMoveEvent : la cible
+    // réelle des mouvements de souris est gvTexture->viewport(), pas
+    // gvTexture lui-même ni ce QDialog. Alimente l'inspecteur de pixel
+    // (lTexturePixelInfo) -- même schéma que UIDebugVDP2Viewer.
+    gvTexture->viewport()->installEventFilter(this);
+    gvTexture->viewport()->setMouseTracking(true);
 
     fillCommandList();
 }
@@ -384,11 +436,87 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
 
     if (vdp1texture) {
         QImage img((uchar *)vdp1texture, vdp1texturew, vdp1textureh, QImage::Format_ARGB32);
-        QPixmap pixmap = QPixmap::fromImage(img.rgbSwapped());
+        // .copy() : vdp1texture est libéré au prochain syncOnVdp1Entry (ou
+        // dans le destructeur) -- sans copie profonde, currentTextureImage
+        // se retrouverait à pointer sur de la mémoire déjà libérée dès la
+        // sélection suivante, ce qui aurait planté l'inspecteur de pixel.
+        currentTextureImage = img.rgbSwapped().copy();
+        QPixmap pixmap = QPixmap::fromImage(currentTextureImage);
         gvTexture->scene()->clear();
         gvTexture->scene()->addPixmap(pixmap);
+        gvTexture->scene()->setSceneRect(gvTexture->scene()->itemsBoundingRect());
         gvTexture->fitInView(gvTexture->scene()->itemsBoundingRect(), Qt::KeepAspectRatio);
+        lTextureInfo->setText(QString("%1 x %2 px").arg(vdp1texturew).arg(vdp1textureh));
+    } else {
+        currentTextureImage = QImage();
+        lTextureInfo->setText(QtYabause::translate(
+            "No texture for this command (draw end, skipped, clipping,\n"
+            "local coordinates, or an invalid command word)"));
     }
+    lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
+}
+
+void UIDebugVDP1::wheelEvent(QWheelEvent *event)
+{
+    // Même schéma que UIDebugVDP2Viewer::wheelEvent : Ctrl+molette zoome,
+    // seulement quand le curseur est au-dessus de la vue texture. Les
+    // sprites VDP1 vont de 8x8 à 504x255 px -- les petits sont difficiles
+    // à inspecter en détail sans zoom, qui n'existait pas du tout avant.
+    if ((event->modifiers() & Qt::ControlModifier) && gvTexture->underMouse())
+    {
+        const double scaleFactor = 1.15;
+        if (event->angleDelta().y() > 0)
+            gvTexture->scale(scaleFactor, scaleFactor);
+        else
+            gvTexture->scale(1.0 / scaleFactor, 1.0 / scaleFactor);
+        event->accept();
+        return;
+    }
+    QDialog::wheelEvent(event);
+}
+
+void UIDebugVDP1::on_pbResetZoom_clicked()
+{
+    gvTexture->resetTransform();
+    if (gvTexture->scene())
+        gvTexture->fitInView(gvTexture->scene()->sceneRect(), Qt::KeepAspectRatio);
+}
+
+// ============================================================
+//  Pixel inspector : même principe que UIDebugVDP2Viewer -- survoler la
+//  texture affiche ses coordonnées et sa couleur RGBA exacte, lues sur
+//  currentTextureImage (donc cohérentes avec le zoom appliqué).
+// ============================================================
+bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == gvTexture->viewport())
+    {
+        if (event->type() == QEvent::MouseMove)
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            QPointF scenePos = gvTexture->mapToScene(me->pos());
+            int px = (int)std::floor(scenePos.x());
+            int py = (int)std::floor(scenePos.y());
+
+            if (!currentTextureImage.isNull() && px >= 0 && py >= 0 &&
+                px < currentTextureImage.width() && py < currentTextureImage.height())
+            {
+                QColor c = currentTextureImage.pixelColor(px, py);
+                lTexturePixelInfo->setText(tr("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
+                    .arg(px).arg(py)
+                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
+            }
+            else
+            {
+                lTexturePixelInfo->setText(tr("Move the mouse over the texture to inspect a pixel."));
+            }
+        }
+        else if (event->type() == QEvent::Leave)
+        {
+            lTexturePixelInfo->setText(tr("Move the mouse over the texture to inspect a pixel."));
+        }
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 void UIDebugVDP1::on_lwCommandRaw_itemSelectionChanged()
@@ -424,9 +552,12 @@ void UIDebugVDP1::on_pbSaveBitmap_clicked()
         QtYabause::translate("Save Bitmap"), 
         "*.png;;*.bmp");
 
-    if (!s.isEmpty() && vdp1texture) {
-        QImage img((uchar *)vdp1texture, vdp1texturew, vdp1textureh, QImage::Format_ARGB32);
-        if (!img.rgbSwapped().save(s))
+    if (!s.isEmpty() && !currentTextureImage.isNull()) {
+        // Réutilise l'image déjà affichée (voir syncOnVdp1Entry) au lieu de
+        // reconvertir vdp1texture indépendamment : les deux ne peuvent plus
+        // diverger, et ça n'exige plus vdp1texture (qui pourrait déjà avoir
+        // été libéré) pour rester valide.
+        if (!currentTextureImage.save(s))
             CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
     }
 }
