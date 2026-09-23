@@ -406,6 +406,7 @@ typedef enum
   UP_HQ4X,
   UP_4XBRZ,
   UP_6XBRZ,
+  UP_SHARPEN,
 } UPMODE;
 
 typedef enum
@@ -709,6 +710,12 @@ typedef struct {
   u8 bmp_remap[4];
   u8 bmp_group_bytes;
   u8 bmp_remap_any;
+  /* Copy of the VRAM taken at V-blank IN, when the frame is composed
+   * (Vdp2GetComposeVram(), vdp2.h), or NULL to read the live VRAM. Read
+   * when the Kronos#520 snapshot of the bank is NULL. Unlike vram_bank[],
+   * a non-NULL value says nothing about VRAM handoffs: access checks must
+   * not look at it. Copied with the struct into the async cell queue. */
+  const u8 *vram_compose;
 } Vdp2Ctrl;
 
 typedef struct {

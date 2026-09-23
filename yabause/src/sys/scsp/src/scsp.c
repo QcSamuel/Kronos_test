@@ -304,6 +304,7 @@ struct SlotState
 
    int num;
    int is_muted;
+   int keyed;   // internal KEY_ON state latched by KYONEX (ST-077-R2 Figure 4.8)
 };
 
 struct Slot
@@ -486,6 +487,24 @@ static INLINE void slot_stop_address(struct Slot * slot)
    slot->state.backwards = 0;
 }
 
+// Loop end as seen by the address generator.
+// ST-077-R2: LSA and LEA are 16-bit sample counts from SA, and the loop end is
+// detected by a coincidence comparator on the address counter (Figure 4.19).
+// That counter is 16 bits wide as well: CA ($408) reads back its bits 15-12,
+// "the LSB indicates 4K (4096) samples". LEA = 0000H therefore ends the loop
+// only when the counter wraps from FFFFH back to 0000H, i.e. after 65536
+// samples - the only way to describe a buffer of exactly 64K samples.
+// The SEGA sound driver sets up its PCM stream buffer that way: Defcon 5 streams
+// its FMV audio through a 128 KB 16-bit ring (SA = 06000H, LSA = LEA = 0000H,
+// LPCTL = 1). Comparing the offset against a literal 0 sent it back to LSA on
+// every sample, so the slot never left sample 0, CA stayed 0, the driver
+// reported a play position of 0 at 7A0H (ST-166 "PCM Play Address"), the game
+// believed its ring never drained and stopped decoding once it filled.
+static INLINE s32 slot_loop_end(const struct Slot * slot)
+{
+   return slot->regs.lea ? (s32)slot->regs.lea : 0x10000;
+}
+
 //pg, plfo
 void op1(struct Slot * slot)
 {
@@ -559,7 +578,7 @@ void op2(struct Slot * slot, struct Scsp * s)
    if (slot->regs.lpctl == 0)//no loop
    {
       slot->state.sample_offset += sample_delta;
-      if (slot->state.sample_offset >= slot->regs.lea)
+      if (slot->state.sample_offset >= slot_loop_end(slot))
       {
          // ST-077-R2 end condition (2): the slot stops as if released.
          slot->state.attenuation = 0x3ff;
@@ -571,7 +590,7 @@ void op2(struct Slot * slot, struct Scsp * s)
    {
       slot->state.sample_offset += sample_delta;
 
-      if (slot->state.sample_offset >= slot->regs.lea)
+      if (slot->state.sample_offset >= slot_loop_end(slot))
          slot->state.sample_offset = slot->regs.lsa;
    }
    else if (slot->regs.lpctl == 2)//reverse
@@ -941,10 +960,22 @@ void scsp_debug_get_envelope(int chan, int * env, int * state)
 
 
 
+// ST-077-R2 Figure 4.8 (KEY_ON and KEY_OFF Sequence): KYONEX latches each
+// slot's KYONB into an internal KEY_ON state. A KYONEX that finds KYONB = 1
+// on a slot already in the ON state is ignored ("Ignore"); only a slot that
+// went through KEY_OFF can be keyed on again.
+// That state is not the envelope: a one-shot that reaches LEA stops as if
+// released (end condition (2), op2) but stays keyed on until its KYONB is
+// cleared. Testing the envelope instead restarted every finished one-shot
+// whose KYONB was still 1 on the next KYONEX, i.e. whenever the sound driver
+// started any other sound. The SEGA driver leaves KYONB set on its one-shots:
+// Defcon 5's gunshot (slots 18/19, 8-bit, no loop) played again each time
+// another sound was keyed on, three or four times per shot.
 void keyon(struct Slot * slot)
 {
-   if (slot->state.envelope == RELEASE )
+   if (!slot->state.keyed)
    {
+      slot->state.keyed = 1;
      change_envelope_state(slot, ATTACK);
       slot->state.attenuation = 0x280;
       slot->state.sample_counter = 0;
@@ -1009,6 +1040,7 @@ void keyon(struct Slot * slot)
 
 void keyoff(struct Slot * slot)
 {
+   slot->state.keyed = 0;
    change_envelope_state(slot, RELEASE);
 
    // Key-off of a slot whose envelope had already decayed to silence:
@@ -5149,7 +5181,26 @@ M68KStop (void)
 {
   if (IsM68KRunning == 1) {
     M68K->Reset();
-    //ScspReset();
+    /* SNDOFF resets the SCSP along with the sound CPU (TECH#51: "If the Sound
+       CPU and the SCSP must be reset, always have the SMPC issue the reset
+       command", i.e. SNDON/SNDOFF). The documented start-up sequence relies
+       on it: ST-166 "Starting the Sound Driver" issues SOUND OFF and then
+       writes 02h to 25B00400 again, because MEM4MB is back to 1 Mbit.
+       Only the registers are reset: sound RAM is kept across SNDOFF (SMPC
+       manual, SNDOFF remarks).
+
+       Independence Day depends on it. Its own 68000 program opens with
+       move #$2000,SR and points every autovector at an error handler
+       (writes an error code to $C88 and parks at $8C). The BIOS sound driver
+       had left Timer B enabled (SCIEB=080h, SCILV1=080h) with the interrupt
+       pending, so the game's program took a level 2 interrupt on its first
+       instruction and never ran: MVOL stayed at the 0 the BIOS had faded to,
+       no DSP program was loaded, and the game had no sound at all.
+
+       Saturn only: on ST-V the 68000 is driven through PDR2 and this path is
+       not the SMPC sound reset. */
+    if (!yabsys.isSTV)
+      scsp_reset();
     IsM68KRunning = 0;
   }
 }
@@ -5386,6 +5437,31 @@ void ScspUnLockThread() {
 
 u64 newCycles = 0;
 
+/* Line-level synchronisation between the main thread (SH2) and the sound
+   thread (68000 + SCSP).
+
+   The main thread used to hand the sound thread a whole frame of cycles at
+   the start of each frame. The sound thread then ran that frame as fast as
+   the host allowed and waited for the next one, so within a frame the 68000
+   was anywhere between one frame ahead of the SH2 and idle. A command the
+   SH2 posted to the sound CPU after that point was only seen at the next
+   frame, up to 16.7 ms late.
+
+   Independence Day depends on the 68000 answering within about 1.7 ms: on
+   the intro FMV the SH2 posts "play sound 0Ah on slot 0" to its 68000
+   program (sound RAM 400h), then 27 lines later programs slot 0 itself for
+   the movie's audio stream (16-bit, looped, LEA = 52B0h, 22 kHz). On the
+   hardware the 68000 has set up sound 0Ah by then and the SH2's settings
+   win. In Kronos the 68000 ran the command on the next frame and overwrote
+   slot 0 with sound 0Ah's 8-bit one-shot, which then played the 16-bit
+   stream as noise for 0.72 s and stopped: no FMV audio, only crackles.
+
+   The cycles are now fed line by line (YabauseEmulate), and every few lines
+   the main thread waits until the sound thread has run what it was given
+   (ScspSyncToLine). The 68000 thus stays within a few lines of the SH2. */
+static volatile u64 scsp_pending_inc = 0;   /* cycles taken but not yet run */
+static volatile int scsp_frame_wait = 0;    /* sound thread parked at frame end */
+
 void* ScspAsynMainCpu( void * p ){
 
   const int samplecnt = 256; // 11289600/44100
@@ -5404,22 +5480,26 @@ void* ScspAsynMainCpu( void * p ){
     YabThreadLock(g_scsp_set_cyc_mtx);
     cycleRequest = newCycles;
     newCycles = 0;
+    m68k_inc += cycleRequest;
+    scsp_pending_inc = m68k_inc;
     YabThreadUnLock(g_scsp_set_cyc_mtx);
     if (cycleRequest == 0){
       YabThreadCondWait(g_scsp_set_cyc_cond, g_scsp_set_cond_mtx);
       YabThreadLock(g_scsp_set_cyc_mtx);
       cycleRequest = newCycles;
       newCycles = 0;
+      m68k_inc += cycleRequest;
+      scsp_pending_inc = m68k_inc;
       YabThreadUnLock(g_scsp_set_cyc_mtx);
     }
 
-    m68k_inc += cycleRequest;
     // Sync 44100KHz
     while (m68k_inc >= samplecnt)
     {
       m68k_inc = m68k_inc - samplecnt;
       MM68KExec(samplecnt);
       new_scsp_exec((samplecnt << 1));
+      scsp_pending_inc = m68k_inc;
 
       frame += samplecnt;
       if (frame >= framecnt)
@@ -5428,16 +5508,45 @@ void* ScspAsynMainCpu( void * p ){
         ScspInternalVars->scsptiming2 = 0;
         ScspInternalVars->scsptiming1 = scsplines;
         ScspExecAsync();
+        scsp_frame_wait = 1;
         YabSemPost(g_scsp_ready);
         // YabThreadYield();
         YabSemWait(g_cpu_ready);
         m68k_inc = 0;
+        scsp_pending_inc = 0;
+        scsp_frame_wait = 0;
         break;
       }
     }
   }
   // YabThreadWake(YAB_THREAD_SCSP);
   return NULL;
+}
+
+/* Called by the main thread every few lines: returns once the sound thread
+   has run the cycles it was given, give or take one 256-cycle chunk. */
+void ScspSyncToLine(void)
+{
+  u32 guard = 0;
+
+  if (!thread_running)
+    return;
+  while (!g_scsp_lock && !scsp_frame_wait)
+  {
+    u64 pending;
+    YabThreadLock(g_scsp_set_cyc_mtx);
+    pending = newCycles + scsp_pending_inc;
+    YabThreadUnLock(g_scsp_set_cyc_mtx);
+    if (pending < 256)
+      break;
+    /* safety net: never hang the main thread on the sound thread */
+    if (++guard > 2000000)
+      break;
+    /* the sound thread may have gone to sleep just before the last
+       ScspAddCycles() signal: wake it again rather than wait forever */
+    YabThreadCondSignal(g_scsp_set_cyc_cond);
+    YabThreadYield();
+  }
 }
 
 void ScspAddCycles(u64 cycles)
@@ -6133,6 +6242,8 @@ if (IsM68KRunning != newM68state) {
     MemStateRead((void *)&new_scsp.slots[i].state.lfo_pos, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.num, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.is_muted, sizeof(u32), 1, stream);
+    // not in the save state: a slot that is still sounding is keyed on
+    new_scsp.slots[i].state.keyed = (new_scsp.slots[i].state.envelope != RELEASE);
 
   }
 
