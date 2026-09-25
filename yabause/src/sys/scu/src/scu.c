@@ -3164,9 +3164,58 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
   if (currentInterrupt >= (sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])))
     return;
 
+  /* Le bit du registre d'etat des interruptions (IST, 25FE00A4H) retombe
+   * quand le SCU livre l'interruption au SH2 maitre. Kronos ne l'effacait
+   * que sur ecriture logicielle de IST : un facteur deja servi restait donc
+   * affiche a 1 pour toujours.
+   *
+   * ST-210 No. 07 / STTECH10 : ecrire dans IST est interdit aux applications
+   * (seuls SYS_SETSCUIM / SYS_CHGSCUIM du boot ROM le font, ST-162 2.1/2.2).
+   * Un programme ne peut donc voir un bit IST repasser a 0 que par ce
+   * mecanisme materiel. Mednafen (ss/scu.inc, CheckDoMasterInt) et Ymir
+   * (hw/scu/scu.cpp, UpdateMasterInterruptLevel) effacent le bit au moment
+   * ou l'interruption est presentee au maitre.
+   *
+   * Densetsu no Ogre Battle (T-5305G) attend, juste apres avoir demarre le
+   * slave, que son gestionnaire V-Blank OUT ait tourne : boucle a 060046A0
+   * sur (IST & 2) != 0. Avec un bit colle a 1, le maitre y restait
+   * indefiniment, ecran noir, sans erreur (IST lu 00002887 a chaque trame).
+   *
+   * Seul le maitre est concerne : les V-Blank IN / H-Blank IN du slave
+   * viennent directement du VDP2 et non du SCU (STTECH28 2.3), ils ne
+   * doivent pas effacer l'etat vu par le maitre. */
+  if (sh == MSH2)
+    ScuRegs->IST &= ~ScuInterrupt[currentInterrupt].status;
+
   ScuRegs->ITEdge &= ~ScuInterrupt[currentInterrupt].status;
   currentInterrupt = 0xFF;
   needEvaluate = 1;
+}
+
+/* Le maitre prend l'interruption de vecteur 'vector' (mode vecteur externe) :
+ * acquitte CETTE source. Entre la reservation par le SH-2 et la prise, le SCU
+ * a pu presenter une source plus prioritaire (currentInterrupt a change) :
+ * ScuAcceptInterrupt(), qui acquitte currentInterrupt, effacerait alors la
+ * mauvaise source, et la plus prioritaire serait perdue. Le verrou n'est
+ * libere que s'il porte bien cette source ; sinon la source verrouillee reste
+ * presentee au CPU. Vecteur hors SCU : rien a faire.
+ *
+ * Le bit IST n'est efface que si le verrou porte encore cette source, comme
+ * le faisait ScuAcceptInterrupt(). Il ne l'est pas quand le slave a deja pris
+ * la meme source (V-Blank IN, H-Blank IN, presentees aux deux CPU) et libere
+ * le verrou partage : l'effacer dans ce cas faisait bloquer Space Jam juste
+ * avant d'entrer en jeu. ITEdge (le front deja servi) est toujours efface. */
+void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector) {
+  int i;
+  for (i = 0; i < (int)(sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])); i++) {
+    if (ScuInterrupt[i].vector != vector) continue;
+    if ((sh == MSH2) && (currentInterrupt == i))
+      ScuRegs->IST &= ~ScuInterrupt[i].status;
+    ScuRegs->ITEdge &= ~ScuInterrupt[i].status;
+    if (currentInterrupt == i) currentInterrupt = 0xFF;
+    needEvaluate = 1;
+    return;
+  }
 }
 
 static void ScuTestInterruptMask(u8 i)
