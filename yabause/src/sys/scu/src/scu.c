@@ -2905,14 +2905,43 @@ struct intCtrl ScuInterrupt[30] = {
 
 };
 
+/* Ecriture partielle (octet ou mot) du registre d'etat des interruptions
+ * IST (25FE00A4H-25FE00A7H). Le registre fait 32 bits ; une ecriture
+ * octet ou mot ne concerne que les bits de sa voie (le SH-2 est gros-boutiste :
+ * A4 = bits 31-24, A5 = 23-16, A6 = 15-8, A7 = 7-0). Comme pour l'ecriture
+ * mot long, un 0 efface le bit et un 1 le laisse tel quel.
+ *
+ * L'ancien code faisait "IST &= val" avec val sur 8 bits en A7 : les bits
+ * 31-8 etaient tous effaces (interruptions A-Bus, fins de DMA, fin de trace
+ * sprite...) et les ecritures en A4/A5/A6 etaient ignorees. Mednafen
+ * (ss/scu.inc, case 0xA4 : IPending &= DB | ~mask) applique le masque de voie.
+ *
+ * TECH#10 / ST-210 No. 07 interdit aux applications d'ecrire dans IST ; le
+ * boot ROM le fait (SYS_SETSCUIM / SYS_CHGSCUIM, ST-162 2.1/2.2) en mot long.
+ * Ce chemin ne sert donc qu'a un logiciel qui ne respecte pas cette regle. */
+static void ScuWriteISTPartial(u32 val, u32 lanemask)
+{
+   u32 keep = val | ~lanemask;
+   if (needEvaluate != 0) {
+     ScuTestAllInterrupt();
+   }
+   ScuRegs->IST &= keep;
+   ScuRegs->ITEdge &= keep;
+   needEvaluate = 1;
+}
+
 void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
    addr &= 0xFF;
    switch(addr) {
+      case 0xA4:
+      case 0xA5:
+      case 0xA6:
       case 0xA7:
-         ScuRegs->IST &= val; // double check this
-         ScuRegs->ITEdge &= val;
-         needEvaluate = 1;
+      {
+         u32 shift = (3 - (addr & 3)) * 8;
+         ScuWriteISTPartial((u32)val << shift, 0xFFu << shift);
          return;
+      }
       default:
          LOG("Unhandled SCU Register byte write %08X\n", addr);
          return;
@@ -2921,9 +2950,20 @@ void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, UNUSED u16 val) {
+void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
    addr &= 0xFF;
-   LOG("Unhandled SCU Register word write %08X\n", addr);
+   switch(addr) {
+      case 0xA4:
+      case 0xA6:
+      {
+         u32 shift = (addr & 2) ? 0 : 16;
+         ScuWriteISTPartial((u32)val << shift, 0xFFFFu << shift);
+         return;
+      }
+      default:
+         LOG("Unhandled SCU Register word write %08X\n", addr);
+         return;
+   }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3365,19 +3405,73 @@ void ScuSendVBlankOUT(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 
+/* Timer 0 : compte les debuts de H-Blank IN depuis le V-Blank OUT, sur TOUTES
+
+ * les lignes de la trame, V-Blank compris. ST-210 (SCU Final Specs:
+
+ * Precautions, n. 30) et TECH#10 : en NTSC non entrelace, T0C = 225 a 263
+
+ * declenche l'interruption pendant le V-Blank, seules les valeurs 264 a 1023
+
+ * n'en declenchent pas. Mednafen (ss/scu.inc, SCU_SetHBVB) incremente
+
+ * Timer0_Counter a chaque debut de H-Blank.
+
+ * Kronos ne comptait que pendant les lignes affichees (ScuSendHBlankIN()
+
+ * n'est appele que la) : un T0C au-dela de 224/240/256 n'etait jamais atteint.
+
+ * Finalist programme T0C = F6h (ligne 246) pour interroger la manette, et
+
+ * affichait "Please insert a controller in control port 1". */
+
+static void ScuTimer0Count(void) {
+
+   ScuRegs->timer0++;
+
+   if (ScuRegs->T1MD & 0x1)
+
+   {
+
+      // if timer0 equals timer 0 compare register, do an interrupt
+
+     if (ScuRegs->timer0 == ScuRegs->T0C) {
+
+        ScuSendTimer0();
+
+        ScuRegs->timer0_set = 1;
+
+     }
+
+     else {
+
+       ScuRegs->timer0_set = 0;
+
+     }
+
+   }
+
+}
+
+
+
+/* Debut de H-Blank IN pendant le V-Blank : seul le Timer 0 avance (pas
+
+   d'interruption H-Blank IN ici, comme avant). */
+
+void ScuHBlankInVBlank(void) {
+
+   ScuTimer0Count();
+
+}
+
+
+
 void ScuSendHBlankIN(void) {
   SetInterrupt(HBLANK_IN);
-   ScuRegs->timer0++;
+   ScuTimer0Count();
    if (ScuRegs->T1MD & 0x1)
    {
-      // if timer0 equals timer 0 compare register, do an interrupt
-     if (ScuRegs->timer0 == ScuRegs->T0C) {
-        ScuSendTimer0();
-        ScuRegs->timer0_set = 1;
-     }
-     else {
-       ScuRegs->timer0_set = 0;
-     }
 
      // if (ScuRegs->timer1_set == 1) {
         // ScuRegs->timer1_set = 0;
