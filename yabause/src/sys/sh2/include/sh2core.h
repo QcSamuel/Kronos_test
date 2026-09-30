@@ -688,6 +688,7 @@ void SH2HangWatchFormat(SH2_struct *context, char *buf, int size);
 #endif
 
 void SH2UpdateBlockedState(SH2_struct *context);
+int  SH2InstructionWillBeReplayed(SH2_struct *context);
 void SH2UpdateABusAccess(SH2_struct *context, int on);
 void SH2DMABusPenalty(SH2_struct *context);
 void SH2SetVRamAccess(SH2_struct *context, int mask);

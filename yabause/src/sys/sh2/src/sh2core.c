@@ -247,10 +247,18 @@ static void SH2StandardExecDebug(SH2_struct *context, u32 cycles) {
 }
 
 static sh2regs_struct oldRegs;
+
+/* Set while a CPU runs inside SH2Core->ExecSave(), the only loop that checks
+   isBlocked after each instruction and rolls it back (see
+   SH2InstructionWillBeReplayed()). */
+static u8 SH2InExecSave[2];
+
 static void SH2BlockableExecDebug(SH2_struct *context, u32 cycles) {
   if (context->isBlocked == 0) {
     int oldbp = context->bp.inbreakpoint;
+    SH2InExecSave[context->isslave ? 1 : 0] = 1;
     SH2Core->ExecSave(context, cycles, &oldRegs);
+    SH2InExecSave[context->isslave ? 1 : 0] = 0;
     if (context->bp.inbreakpoint && !oldbp) {
       context->bp.BreakpointCallBack(context, 0, &context->bp.BreakpointUserData);
       context->bp.inbreakpoint = 0;
@@ -261,7 +269,9 @@ static void SH2BlockableExecDebug(SH2_struct *context, u32 cycles) {
 }
 static void SH2BlockableExecFast(SH2_struct *context, u32 cycles) {
   if (context->isBlocked == 0) {
+    SH2InExecSave[context->isslave ? 1 : 0] = 1;
     SH2Core->ExecSave(context, cycles, &oldRegs);
+    SH2InExecSave[context->isslave ? 1 : 0] = 0;
   } else {
     context->cycles += cycles;
   }
@@ -373,6 +383,29 @@ void SH2UpdateBlockedState(SH2_struct *context){
   context->isBlocked  = ((context->blockingMask & A_BUS_ACCESS)!=0);
   context->isBlocked |= ((context->isAccessingVram & context->blockingMask)!=0);
 }
+
+/* True when the instruction being executed will be rolled back and replayed:
+ * the CPU is blocked AND it is running inside SH2Core->ExecSave(), whose loop
+ * checks isBlocked after each instruction and restores the registers.
+ *
+ * Neither isBlocked alone nor the SH2InterruptibleExec pointer says that:
+ *  - isBlocked is only recomputed when isAccessingCPUBUS or isAccessingVram
+ *    changes, so it can stay at 1 on SH2StandardExec (after SH2Reset(), or
+ *    SH2ClearCPUConcurrency() with isAccessingCPUBUS already 0);
+ *  - SH2SetCPUConcurrency() switches SH2InterruptibleExec to SH2BlockableExec
+ *    in the MIDDLE of a slice, when the CPU itself starts an SCU DMA by
+ *    writing DxEN. The rest of that slice still runs in SH2StandardExec,
+ *    which never rolls back.
+ * Hop Step Idol (frame 647, line 261): the master starts an SCU DMA, then
+ * spins on the TAS.B semaphore 060FFFA0 at 0606784E in the same slice. The
+ * TAS read blocked it, the guard skipped the write, returned without
+ * advancing PC nor cycles, and SH2StandardExec executed the same TAS again
+ * forever: emulation frozen on a black screen right after the BIOS. */
+int SH2InstructionWillBeReplayed(SH2_struct *context) {
+  return (context->isBlocked != 0) &&
+         (SH2InExecSave[context->isslave ? 1 : 0] != 0);
+}
+
 
 void SH2SetCPUConcurrency(SH2_struct *context, u8 mask) {
   if ((context->SH2InterruptibleExec != SH2BlockableExec) || !(context->blockingMask & mask)) {
